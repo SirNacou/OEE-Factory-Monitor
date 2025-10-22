@@ -243,7 +243,9 @@ func sendStatusEvent(client mqtt.Client, machineID int, status string) {
 
 	log.Printf("[Machine %d] Publishing to %s: %s", machineID, topic, status)
 
-	token := client.Publish(topic, 0, false, payload)
+	// Use QoS=1 and retained=true so EMQX will persist the latest status per topic.
+	// QoS=1 ensures delivery at least once; retained=true stores the last message on the broker.
+	token := client.Publish(topic, 1, true, payload)
 	// We use .Wait() to make sure the message is sent before proceeding
 	// For super high throughput, you could remove this and just check errors
 	token.Wait()
@@ -266,7 +268,9 @@ func sendProductionEvent(client mqtt.Client, machineID, produced, scrapped int) 
 	// Don't log every part, it's too noisy.
 	// log.Printf("[Machine %d] Publishing to %s: %d good, %d scrap", machineID, topic, payload)
 
-	token := client.Publish(topic, 0, false, payload)
+	// For production events we also use QoS=1 and set retained=true so the broker keeps
+	// the last production event per machine (useful for immediate consumers after restart).
+	token := client.Publish(topic, 1, true, payload)
 	token.Wait()
 	if token.Error() != nil {
 		log.Printf("[Machine %d] ERROR publishing production: %v", machineID, token.Error())
