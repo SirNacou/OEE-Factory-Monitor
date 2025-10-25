@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -30,6 +31,9 @@ type Config struct {
 
 // Global config instance
 var config Config
+
+// Mutex to synchronize MQTT publishes from multiple goroutines
+var publishMutex sync.Mutex
 
 // loadConfig loads configuration from environment variables
 func loadConfig() (Config, error) {
@@ -245,10 +249,13 @@ func sendStatusEvent(client mqtt.Client, machineID int, status string) {
 
 	// Use QoS=1 and retained=true so EMQX will persist the latest status per topic.
 	// QoS=1 ensures delivery at least once; retained=true stores the last message on the broker.
+	// Use mutex to prevent concurrent publishes from causing connection issues
+	publishMutex.Lock()
 	token := client.Publish(topic, 1, true, payload)
 	// We use .Wait() to make sure the message is sent before proceeding
-	// For super high throughput, you could remove this and just check errors
 	token.Wait()
+	publishMutex.Unlock()
+
 	if token.Error() != nil {
 		log.Printf("[Machine %d] ERROR publishing status: %v", machineID, token.Error())
 	}
@@ -270,8 +277,12 @@ func sendProductionEvent(client mqtt.Client, machineID, produced, scrapped int) 
 
 	// For production events we also use QoS=1 and set retained=true so the broker keeps
 	// the last production event per machine (useful for immediate consumers after restart).
+	// Use mutex to prevent concurrent publishes from causing connection issues
+	publishMutex.Lock()
 	token := client.Publish(topic, 1, true, payload)
 	token.Wait()
+	publishMutex.Unlock()
+
 	if token.Error() != nil {
 		log.Printf("[Machine %d] ERROR publishing production: %v", machineID, token.Error())
 	}

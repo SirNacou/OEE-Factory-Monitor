@@ -37,7 +37,7 @@ func mustEnv(key, def string) string {
 
 func main() {
 	mqttURL := mustEnv("MQTT_BROKER_URL", "tcp://emqx:1883")
-	mqttClientID := mustEnv("MQTT_CLIENT_ID", "oee-ingestor")
+	mqttClientID := mustEnv("MQTT_INGEST_CLIENT_ID", "oee-ingestor")
 	pgHost := mustEnv("PG_HOST", "timescaledb")
 	pgPort := mustEnv("PG_PORT", "5432")
 	pgUser := mustEnv("PG_USER", "postgres")
@@ -53,10 +53,41 @@ func main() {
 	}
 	defer db.Close()
 
+	// Test database connection
+	if err := db.Ping(); err != nil {
+		log.Fatalf("failed to ping database: %v", err)
+	}
+	log.Printf("Connected to TimescaleDB")
+
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(mqttURL)
 	opts.SetClientID(mqttClientID)
 	opts.SetAutoReconnect(true)
+	opts.SetConnectRetry(true)
+	opts.SetMaxReconnectInterval(10 * time.Second)
+	opts.SetKeepAlive(60 * time.Second)
+	opts.SetPingTimeout(10 * time.Second)
+
+	// Define topics to subscribe to
+	topics := []string{"factory/machine/+/status", "factory/machine/+/production"}
+
+	// On connect callback - resubscribe to topics
+	opts.OnConnect = func(c mqtt.Client) {
+		log.Printf("Connected to MQTT broker at %s", mqttURL)
+		for _, t := range topics {
+			if token := c.Subscribe(t, 1, func(client mqtt.Client, m mqtt.Message) {
+				handleMessage(db, m.Topic(), m.Payload())
+			}); token.Wait() && token.Error() != nil {
+				log.Printf("ERROR: failed to subscribe to %s: %v", t, token.Error())
+			} else {
+				log.Printf("Subscribed to topic: %s", t)
+			}
+		}
+	}
+
+	opts.OnConnectionLost = func(c mqtt.Client, err error) {
+		log.Printf("MQTT connection lost: %v", err)
+	}
 
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
@@ -64,17 +95,7 @@ func main() {
 	}
 	defer client.Disconnect(250)
 
-	// Subscribe to factory topics
-	topics := []string{"factory/machine/+/status", "factory/machine/+/production"}
-	for _, t := range topics {
-		if token := client.Subscribe(t, 1, func(c mqtt.Client, m mqtt.Message) {
-			handleMessage(db, m.Topic(), m.Payload())
-		}); token.Wait() && token.Error() != nil {
-			log.Fatalf("failed to subscribe to %s: %v", t, token.Error())
-		}
-	}
-
-	log.Printf("Ingestor subscribed to topics, running...")
+	log.Printf("Ingestor running, waiting for messages...")
 	select {}
 }
 
